@@ -18,9 +18,9 @@ import subprocess
 
 import pandas as pd
 import re
-
+import tempfile
 import uuid
-
+from io import StringIO
 # from scipy.spatial import KDTree
 # from scipy.spatial import cKDTree
 import numpy as np
@@ -28,8 +28,8 @@ from collections import OrderedDict
 
 __author__="Alexey Shaytan"
 
-TEMP='/tmp/dna_tools'
-os.system("mkdir -p %s"%TEMP)
+#TEMP='/tmp/dna_tools'
+#os.system("mkdir -p %s"%TEMP)
 P_X3DNA_DIR=''
 P_X3DNA_analyze='analyze'
 P_X3DNA_find_pair='find_pair'
@@ -37,8 +37,8 @@ P_X3DNA_rebuild='rebuild'
 P_X3DNA_x3dna_utils='x3dna_utils'
 
 
-P_CURVES='/Users/alexeyshaytan/bin/Cur+'
-P_CURVES_LIB='/Users/alexeyshaytan/soft/curves+/standard'
+P_CURVES='Cur+'
+P_CURVES_LIB='curves+/standard' #NEED to adjust
 
 
 #os.environ['X3DNA']=P_X3DNA_DIR
@@ -61,34 +61,39 @@ def X3DNA_find_pair(DNA_pdb):
 	returns a unique string - which is the file name of find_pair outfile
 	in the TEMP directory.
 	"""
+	with tempfile.TemporaryDirectory() as TEMP:
+		print('created temporary directory', TEMP)
+		#At first we need to makup a couple of unique file names
+# 		unique=str(uuid.uuid4())
+# 		pdb = unique+'.pdb'
+# 		outf = unique
 
-	#At first we need to makup a couple of unique file names
-	unique=str(uuid.uuid4())
-	pdb = unique+'.pdb'
-	outf = unique
 
+		print("Writing coords to input.pdb")
+		os.system("cp "+DNA_pdb+' '+TEMP+'/input.pdb')
 
-	print("Writing coords to "+pdb)
-	os.system("cp "+DNA_pdb+' '+TEMP+'/'+pdb)
-
-	cmd=P_X3DNA_find_pair+' '+pdb+' '+outf
+		cmd=P_X3DNA_find_pair+' input.pdb output'
     #print(cmd)
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE,universal_newlines=True)
-	# wait for the process to terminate
-	out, err = p.communicate()
-	#errcode = p.returncode
-	print("OUT:",out)
-	print("ERR:",err)
-	return(outf)
+		p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE,universal_newlines=True)
+		# wait for the process to terminate
+		out, err = p.communicate()
+		#errcode = p.returncode
+		print("OUT:",out)
+		print("ERR:",err)
+		with open(TEMP+'/output', mode='r')  as file:
+			buffer = StringIO()
+			buffer.write(file.read())
+			buffer.seek(0)
+	return(buffer)
 
 
-def X3DNA_analyze(DNA_pdb,ref_fp_id):
+def X3DNA_analyze(DNA_pdb,ref_fp_id=None):
 	"""Performs the analysis using X3DNA
 
 	Parameters
 	----------
 	DNA_pdb - see above
-	ref_fp_id - this is output id from X3DNA_find_pair function,
+	ref_fp_id - this is output file stream from X3DNA_find_pair function,
 	which was obtained for the structure that will be considered as a reference
 	to determine which bases are paired.
 
@@ -112,124 +117,66 @@ def X3DNA_analyze(DNA_pdb,ref_fp_id):
 
 	#Now we still run find_pairs on this frame to check if any base pairing was lost
 	#and simultaneously to output pdb
+	print('Running findpair on the original input')
 	cur_fp_id=X3DNA_find_pair(DNA_pdb)
-	pdb = cur_fp_id+'.pdb'
-	inp = cur_fp_id
-
-	#we have to do substitution in ref_fp_id file and copy it
-	#so it will process new file using original base pair information
-	#sed 's/pattern/replacement/g'
-
-	cmd='sed "s/'+ref_fp_id+'/'+cur_fp_id+'/g" '+ref_fp_id+'>'+cur_fp_id+'.fr' #fr - dreived from reference
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE,universal_newlines=True)
-	out, err = p.communicate()
-	print('OUT:',out,err)
-	
-	#Now we can run X3DNA_analyze
-	cmd=P_X3DNA_analyze+' '+cur_fp_id+'.fr'
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE,universal_newlines=True)
-	out, err = p.communicate()
-	print('OUT:',out,err)
+	with tempfile.TemporaryDirectory() as TEMP:
+		print('created temporary directory', TEMP)
+		if(ref_fp_id is None):
+			ref_fp_id=cur_fp_id
+		print("Writing coords to input.pdb")
+		os.system("cp "+DNA_pdb+' '+TEMP+'/input.pdb')
+		print("Writing provided find pair file")
+		with open(TEMP+'/output','w') as file:
+			ref_fp_id.seek(0)
+			file.write(ref_fp_id.read())
+			ref_fp_id.seek(0)
+		print("Writing new find pair file")
+		with open(TEMP+'/output_new','w') as file:
+			cur_fp_id.seek(0)
+			file.write(cur_fp_id.read())
+			cur_fp_id.seek(0)
+         
+		#Now we can run X3DNA_analyze
+		cmd=P_X3DNA_analyze+' output'
+		p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE,universal_newlines=True)
+		out, err = p.communicate()
+		print('OUT:',out,err)
 
 ################################################
 #Extract base pairing, bp centers, bp params, bp step params
 ################################################
 
-	#####Base pairing (might be some got unpaired with respect to reference)
+		#####Base pairing (might be some got unpaired with respect to reference)
 	
-	#####Extract centers of base pairs from ref_frames.dat
-	df_rf=parse_ref_frames(TEMP+'/'+'ref_frames.dat')
-	# print(df_rf)
-	###Extract base pair and base pair step parameters
-	df_bp=parse_bases_param(TEMP+'/'+'bp_step.par')
-	# print(df_bp)
-	###Extract base pairing by comparing reference and current
-	df_pairing=check_pairing(TEMP+'/'+ref_fp_id,TEMP+'/'+cur_fp_id)
-	# print df_pairing
+		#####Extract centers of base pairs from ref_frames.dat
+		df_rf=parse_ref_frames(TEMP+'/'+'ref_frames.dat')
+		# print(df_rf)
+		###Extract base pair and base pair step parameters
+		df_bp=parse_bases_param(TEMP+'/'+'bp_step.par')
+		# print(df_bp)
+		###Extract base pairing by comparing reference and current
+		df_pairing=check_pairing(TEMP+'/output',TEMP+'/output_new')
+		# print df_pairing
 ################################################
-	#Special call to X3DNA_analyze that will get sugar and backbone params
-	#This call stangly deletes some files from previous call
-	#So we need to extract base-pair and ref frames info before
-	cmd=P_X3DNA_analyze+' -t=backbone.tor '+pdb
-	# print cmd
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-	# wait for the process to terminate
-	out, err = p.communicate()
-	errcode = p.returncode
-	print('OUT:',out,err)
+		#Special call to X3DNA_analyze that will get sugar and backbone params
+		#This call stangly deletes some files from previous call
+		#So we need to extract base-pair and ref frames info before
+		cmd=P_X3DNA_analyze+' -t=backbone.tor input.pdb'
+		# print cmd
+		p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		# wait for the process to terminate
+		out, err = p.communicate()
+		errcode = p.returncode
+		print('OUT:',out,err)
 ####################################
 ##Now let's get torsion parameters
-	df_tor=parse_tor_param(TEMP+'/backbone.tor')
-	# print(df_tor)
-	#Now we concatenate all the data frames
-	df_res=pd.concat([df_rf,df_bp,df_pairing,df_tor],axis=1)
-	df_res['BPnum']=range(1,len(df_res)+1)
-	df_res=df_res.reset_index(drop=True)
+		df_tor=parse_tor_param(TEMP+'/backbone.tor')
+		# print(df_tor)
+		#Now we concatenate all the data frames
+		df_res=pd.concat([df_rf,df_bp,df_pairing,df_tor],axis=1)
+		df_res['BPnum']=range(1,len(df_res)+1)
+		df_res=df_res.reset_index(drop=True)
 	return(df_res)
-
-
-def X3DNA_analyze_bp_step(DNA_pdb,ref_fp_id):
-	"""Performs the analysis using X3DNA and output only bp_step
-
-	Parameters
-	----------
-	DNA_atomsel - see above
-	ref_fp_id - this is output id from X3DNA_find_pair function,
-	which was obtained for the structure that will be considered as a reference
-	to determine which bases are paired.
-
-	Return
-	--------
-	PANDAS data frame of the following format:
-	Rows are numbered sequentially and correspond to the output of X3DNA (user has to check how X3DNA handled numbering in specific structure).
-	This output established the numbering of base-pairs (usually this coincide with the numbering of the first strand).
-	
-	All the names of the returned parameters correspond to their names in X3DNA.
-	Additional columns:
-	Pairing - 1 if X3DNA sees a base pair there with respect to reference (even if if is non standart pairing), 0 if not.
-	x,y,z - the centers of reference frames of individual base pairs.
-	BPnum - numer of base pair from 1 to N
-	"""
-
-	#Now we still run find_pairs on this frame to check if any base pairing was lost
-	#and simultaneously to output pdb
-	cur_fp_id=X3DNA_find_pair(DNA_pdb)
-	pdb = cur_fp_id+'.pdb'
-	inp = cur_fp_id
-
-	#we have to do substitution in ref_fp_id file and copy it
-	#so it will process new file using original base pair information
-	#sed 's/pattern/replacement/g'
-
-	cmd='sed "s/'+ref_fp_id+'/'+cur_fp_id+'/g" '+ref_fp_id+'>'+cur_fp_id+'.fr' #fr - dreived from reference
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-	out, err = p.communicate()
-	print('OUT:'+out+err)
-	
-	#Now we can run X3DNA_analyze
-	cmd=P_X3DNA_analyze+' '+cur_fp_id+'.fr'
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-	out, err = p.communicate()
-	print('OUT:'+out+err)
-
-################################################
-#Extract base pairing, bp centers, bp params, bp step params
-################################################
-
-
-	###Extract base pair and base pair step parameters
-	df_bp=parse_bases_param(TEMP+'/'+'bp_step.par')
-	# print(df_bp)
-
-################################################
-
-####################################
-
-	df_res=df_bp
-	df_res['BPnum']=range(1,len(df_res)+1)
-	df_res=df_res.reset_index(drop=True)
-	return(df_res)
-
 
 
 
@@ -503,14 +450,14 @@ def parse_lis(file):
 def gen_bp_step(data_frame,new_seq=None):
 	"""
 	Generates the bp_step.par file based on a data frame (might be the output of X3DNA_analyze or X3DNA_analyze_bp_step)
-	Returns a file name
+	Returns a file object
 
-	Optionally we can place a new sequnce here in new_seq ['A','T',..].
+	Optionally we can place a new sequence here in new_seq ['A','T',..].
 	"""
 
-	unique=str(uuid.uuid4())
-	par = unique+'.par'
-	full_path=TEMP+'/'+par
+# 	unique=str(uuid.uuid4())
+# 	par = unique+'.par'
+# 	full_path=TEMP+'/'+par
 
 	new_df=data_frame[['BPname','Shear','Stretch','Stagger','Buckle','Prop-Tw','Opening','Shift','Slide','Rise','Tilt','Roll','Twist']]
 
@@ -526,7 +473,8 @@ def gen_bp_step(data_frame,new_seq=None):
 	new_df=new_df.fillna(0.0)
 
 
-	f=open(full_path+'tmp','w')
+	#f=open(full_path+'tmp','w')
+	f=StringIO()
 	# f=open(par,'w')
 
 	f.write(" %d # base-pairs\n"%len(new_df.index))
@@ -534,15 +482,16 @@ def gen_bp_step(data_frame,new_seq=None):
 	f.write('#        Shear    Stretch   Stagger   Buckle   Prop-Tw   Opening     Shift     Slide     Rise      Tilt      Roll      Twist\n')
 	# new_df.to_string(f,index=False,na_rep='0.000',float_format='{:>10.3f}'.format)
 	new_df.to_string(f,index=False,header=False,justify='left',col_space=0,na_rep='0.000',formatters=['{:4s}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format,'{:>9.3f}'.format])
-	f.close()
+	f.seek(0)
 	#Now megahack - we need to strip one space from every row.
-	with open(full_path+'tmp','rb') as f:
-		with open(full_path,'wb') as f2:
-			for line in f:
-				f2.write(line[0:])
-
-
-	return(full_path)
+	f2=StringIO()
+	for line in f:
+		f2.write(line[0:])
+	f2.seek(0)
+# 	print(f2.read())
+# 	f2.seek(0)
+    
+	return(f2)
 
 
 def build_dna(data_frame,pdbfile,new_seq=None):
@@ -552,17 +501,22 @@ def build_dna(data_frame,pdbfile,new_seq=None):
 	"""
 	par_fname=gen_bp_step(data_frame,new_seq)
 
-	cmd=P_X3DNA_x3dna_utils+' cp_std BDNA'
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-	out, err = p.communicate()
-	print('OUT:',out,err)
-
-	cmd=P_X3DNA_rebuild+' -atomic '+par_fname+' '+par_fname+'.pdb'
-	p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-	out, err = p.communicate()
-	print('OUT:',out,err)
-
-	os.system('mv '+par_fname+'.pdb '+pdbfile)
+	with tempfile.TemporaryDirectory() as TEMP:
+		print('created temporary directory', TEMP)
+		cmd=P_X3DNA_x3dna_utils+' cp_std BDNA'
+		p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		out, err = p.communicate()
+		print('OUT:',out,err)
+		with open(TEMP+'/par_file','w') as file:
+			file.write(par_fname.read())
+        
+		cmd=P_X3DNA_rebuild+' -atomic par_file out.pdb'
+		p = subprocess.Popen(cmd,shell=True,cwd=TEMP,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		out, err = p.communicate()
+		print('OUT:',out,err)
+# 		with open(TEMP+'/out.pdb','r') as file:
+# 			print(file.read())
+		os.system('mv '+TEMP+'/out.pdb '+pdbfile)
 
 def change_dna_seq_in_pdb(DNA_pdb,NEW_pdb,new_seq):
 	"""
